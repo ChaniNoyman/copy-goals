@@ -15,121 +15,98 @@ public class CsvCopyAndSplit
         string logFilePath = @"C:\Users\Chanif\Desktop\C#\Copy Excel File\LOG.csv"; // נתיב לקובץ הלוג
 
         var processedRecords = new List<string[]>();
-        string tabNewlineRegex = @"\t{10,}"; // ביטוי רגולרי שמחפש 10 טאבים או יותר
 
         using (var reader = new StreamReader(sourceFilePath, Encoding.UTF8))
-        using (var writer = new StreamWriter(destinationFilePath, false, Encoding.UTF8))
-        using (var logWriter = new StreamWriter(logFilePath, false, Encoding.UTF8)) // פתיחת StreamWriter עבור הלוג
+        using (var writer = new StreamWriter(destinationFilePath, false, Encoding.UTF8, 1024) { NewLine = "\n" }) // כתיבה עם LF
+        using (var logWriter = new StreamWriter(logFilePath, false, Encoding.UTF8, 1024) { NewLine = "\n" }) // כתיבה עם LF
         {
-            string fileContent = reader.ReadToEnd();
-            string[] lines = Regex.Split(fileContent, tabNewlineRegex);
-
-            foreach (string line in lines)
+            string line;
+            while ((line = ReadLineLFOnly(reader)) != null)
             {
                 string[] columns = Regex.Split(line, @"\t");
-                string delimiter = "!#!#";
-                int delimiterIndex = -1;
 
-                if (columns.Length > 1)
+                if (columns.Length > 0 && Regex.IsMatch(columns[0], @"\d")) // בדיקה אם עמודה A מכילה לפחות מספר אחד
                 {
-                    for (int i = 0; i < columns.Length; i++)
-                    {
-                        if (columns[i].Contains(delimiter))
-                        {
-                            delimiterIndex = i;
-                            break;
-                        }
-                    }
-
                     string colA = columns[0];
-                    if (colA == "\r\n10495")
-                    {
-                        colA = "10495";
-                    }
-                    string colB = string.Join("", columns.Skip(1));
+                    List<string> outputValues = new List<string> { colA }; // אתחול outputValues עם עמודה A
+                    bool splitOccurred = false;
+                    List<string> splitParts = new List<string>();
 
-                    // בדיקה אם columns מכיל יותר משני תאים
-                    if (delimiterIndex != -1)
+                    if (columns.Length > 1)
                     {
-                        colB = string.Join("\t", columns.Skip(1).Take(delimiterIndex - 1));
-                        if (string.IsNullOrEmpty(colB))
+                        string colB = columns[1];
+                        if (columns.Length > 2)
                         {
-                            colB = string.Join("\t", columns.Skip(delimiterIndex));
-                            string searchTerm = "מטרות";
-                            colB = FindAllSiblingsLiAfterText(colB, searchTerm);
+                            colB = string.Join("", columns.Skip(1));
                         }
-                    }
-
-                    if (!string.IsNullOrEmpty(colB))
-                    {
                         colB = ReplaceStrongTagsAndKeepHebrew(colB);
                         colB = truncateAtFirstMatch(colB);
                         colB = Regex.Replace(colB, "שבטייצירת", "שבט יצירת");
-
-                        List<string> outputValues = new List<string> { colA };
-                        bool splitOccurred = false;
-
-                        // ********** טיפול בפיצול לפי מספור והסרת מספור ושמירה בשורה אחת **********
-
-                        if (Regex.IsMatch(colB, @"\d+[\.\)]"))
+                        if (colB.EndsWith("\""))
                         {
-                            // פיצול לפי מספור ומחיקת המספור
-                            string[] parts = Regex.Split(colB, @"\s*\d+[\.\)]\s*");
+                            colB = colB.Substring(0, colB.Length - 1);
+                        }
+
+                        string textWithoutHtml = RemoveHtmlTags(colB); // חילוץ טקסט ללא HTML
+
+                        // פיצול על סמך מספר ואחריו נקודה או סוגריים ואז רווח אופציונלי (יכול להופיע בכל מקום)
+                        if (Regex.IsMatch(textWithoutHtml, @"\d+[\.\)]\s"))
+                        {
+                            string[] parts = Regex.Split(textWithoutHtml, @"\s*\d+[\.\)]\s*");
                             foreach (string part in parts)
                             {
                                 string trimmedPart = part.Trim();
                                 if (!string.IsNullOrEmpty(trimmedPart))
                                 {
-                                    trimmedPart = Regex.Replace(trimmedPart, "שבטייצירת", "שבט יצירת"); // החלפה גם פה
-                                    outputValues.Add(RemoveNonHebrewPrefix(trimmedPart));
+                                    trimmedPart = Regex.Replace(trimmedPart, "שבטייצירת", "שבט יצירת");
+                                    splitParts.Add(RemoveNonHebrewPrefix(trimmedPart));
                                 }
                             }
-                            splitOccurred = true;
-                        }
-
-                        // ********** פיצול לפי HTML אם לא פוצל לפי מספור **********
-                        else if (Regex.IsMatch(colB, @"<[^>]+>"))
-                        {
-                            var htmlDoc = new HtmlAgilityPack.HtmlDocument();
-                            htmlDoc.LoadHtml(colB);
-
-                            var leafNodes = htmlDoc.DocumentNode.Descendants()
-                                .Where(n => n.NodeType == HtmlNodeType.Element &&
-                                            !n.ChildNodes.Any(c => c.NodeType == HtmlNodeType.Element) &&
-                                            !string.IsNullOrWhiteSpace(n.InnerText));
-
-                            foreach (var node in leafNodes)
+                            if (splitParts.Any())
                             {
-                                string trimmedText = node.InnerText.Trim();
-                                trimmedText = Regex.Replace(trimmedText, "שבטייצירת", "שבט יצירת");
-                                trimmedText = Regex.Replace(trimmedText, @"\r\n|\r|\n", " "); // החלפת ירידות שורה ברווח
-                                outputValues.Add(RemoveNonHebrewPrefix(trimmedText));
-                            }
-                            if (leafNodes.Any())
-                            {
+                                outputValues.AddRange(splitParts);
                                 splitOccurred = true;
                             }
                         }
-                        // ********** אם לא פוצל באף אחת מהשיטות **********
+                        else if (Regex.IsMatch(colB, @"<\s*\w+.*?>")) // אם אין מספור, בודקים אם יש תגיות HTML
+                        {
+                            var htmlDoc = new HtmlAgilityPack.HtmlDocument();
+                            htmlDoc.LoadHtml(colB);
+                            var textNodes = htmlDoc.DocumentNode.SelectNodes("//text()[normalize-space()]");
+                            if (textNodes != null)
+                            {
+                                foreach (var node in textNodes)
+                                {
+                                    string trimmedText = node.InnerText.Trim();
+                                    trimmedText = Regex.Replace(trimmedText, "שבטייצירת", "שבט יצירת");
+                                    splitParts.Add(RemoveNonHebrewPrefix(RemoveHtmlTags(trimmedText)));
+                                }
+                                if (splitParts.Any())
+                                {
+                                    outputValues.AddRange(splitParts);
+                                    splitOccurred = true;
+                                }
+                            }
+                            else
+                            {
+                                outputValues.Add(RemoveNonHebrewPrefix(RemoveHtmlTags(colB)));
+                            }
+                        }
                         else
                         {
-                            string value = colB.Trim();
-                            value = Regex.Replace(value, @"\r\n|\r|\n", " "); // החלפת ירידות שורה ברווח
-                            outputValues.Add(RemoveNonHebrewPrefix(value));
-                        }
-
-                        if (!string.IsNullOrWhiteSpace(colA) || outputValues.Count > 2 || !string.IsNullOrWhiteSpace(colB))
-                        {
-                            processedRecords.Add(outputValues.ToArray());
-                        }
-                        else if (outputValues.Count <= 2 && !string.IsNullOrWhiteSpace(colB))
-                        {
-                            logWriter.WriteLine($"{colA}\t{colB}");
+                            outputValues.Add(RemoveNonHebrewPrefix(RemoveHtmlTags(colB)));
                         }
                     }
-                    else if (!string.IsNullOrWhiteSpace(colA))
+                    else if (columns.Length == 1) // אם יש רק עמודה אחת
                     {
-                        processedRecords.Add(new string[] { colA, "" });
+                        processedRecords.Add(new[] { colA });
+                        continue;
+                    }
+
+                    processedRecords.Add(outputValues.ToArray());
+                    if (!splitOccurred && columns.Length > 1 && !string.IsNullOrWhiteSpace(columns[1]))
+                    {
+                        logWriter.WriteLine($"{colA}\t{columns[1]}");
                     }
                 }
             }
@@ -145,14 +122,36 @@ public class CsvCopyAndSplit
                 writer.WriteLine(string.Join("\t", record));
             }
         }
-        // קוד למחיקת שורות ריקות מקובץ היעד
-        var existingLines = File.ReadAllLines(destinationFilePath).ToList();
-        var nonBlankLines = existingLines.Where(line => !string.IsNullOrWhiteSpace(line));
-        File.WriteAllLines(destinationFilePath, nonBlankLines);
 
-        Console.WriteLine("הפעולה הסתיימה בהצלחה, ושורות ריקות הוסרו מקובץ היעד.");
-    } // סיום בלוק ה-using של reader ו-logWriter
+        Console.WriteLine("הפעולה הסתיימה בהצלחה!");
+    }
 
+    private static string ReadLineLFOnly(StreamReader reader)
+    {
+        StringBuilder sb = new StringBuilder();
+        int charCode;
+        char? previousChar = null;
+
+        while ((charCode = reader.Read()) != -1)
+        {
+            char currentChar = (char)charCode;
+
+            if (currentChar == '\n' && previousChar != '\r')
+            {
+                return sb.ToString();
+            }
+            else if (currentChar == '\r')
+            {
+                previousChar = currentChar;
+            }
+            else
+            {
+                sb.Append(currentChar);
+                previousChar = currentChar;
+            }
+        }
+        return sb.Length > 0 ? sb.ToString() : null;
+    }
 
     private static string[] ShiftLeft(string[] row)
     {
@@ -193,7 +192,7 @@ public class CsvCopyAndSplit
     {
         string[] keywords = { "ציוד", "מקורות להרחבה", "העשרה למדריכים", "אביזרים", "עזרים", "שימו לב,", "הערה כללית", "כובעים", "מדריכים יקרים"
                                     , "הערה למדריכים" , "בקבוק", "חשבי", "רעיון ליישום", "להרחבה", "המלצות ללימוד", "כמה רעיונות", "מקורות מידע", "בנו טקס", "טיפים",
-                                    "הקדמה:", "שים לב פעולה", "למדריכים", "כפיסי קפלה"};
+                                    "הקדמה:", "שים לב פעולה", "למדריכים", "כפיסי קפלה","חומרי עזר","מאמרי הראי\"\"ה"};
         int firstIndex = -1;
 
         foreach (string keyword in keywords)
@@ -213,88 +212,14 @@ public class CsvCopyAndSplit
         return text;
     }
 
-    public static string FindAllSiblingsLiAfterText(string html, string searchText, string separator = "")
+    private static string RemoveHtmlTags(string input)
     {
+        if (string.IsNullOrEmpty(input))
+        {
+            return input;
+        }
         HtmlDocument doc = new HtmlDocument();
-        doc.LoadHtml(html);
-
-        var nodesContainingText = doc.DocumentNode.SelectNodes($"//*[contains(text(), '{searchText}')]");
-
-        if (nodesContainingText == null || !nodesContainingText.Any())
-        {
-            return null;
-        }
-
-        foreach (var textNode in nodesContainingText)
-        {
-            HtmlNode currentNode = textNode;
-            HtmlNode firstFoundNode = null;
-            string foundNodeType = "";
-
-            // חפש את תגית ה-<li> או <p> הראשונה אחרי הטקסט
-            while ((currentNode = GetNextNode(currentNode)) != null)
-            {
-                if (currentNode.Name.Equals("li", StringComparison.OrdinalIgnoreCase))
-                {
-                    firstFoundNode = currentNode;
-                    foundNodeType = "li";
-                    break; // מצאנו <li>, יוצאים מהלולאה
-                }
-                if (currentNode.Name.Equals("p", StringComparison.OrdinalIgnoreCase))
-                {
-                    firstFoundNode = currentNode;
-                    foundNodeType = "p";
-                    break; // מצאנו <p>, יוצאים מהלולאה
-                }
-            }
-
-            if (firstFoundNode != null)
-            {
-                if (foundNodeType == "li" && firstFoundNode.ParentNode != null)
-                {
-                    // קבל את כל הילדים של ההורה של ה-<li> הראשון
-                    var siblingNodes = firstFoundNode.ParentNode.ChildNodes;
-                    List<string> siblingLis = new List<string>();
-
-                    foreach (var sibling in siblingNodes)
-                    {
-                        if (sibling.Name.Equals("li", StringComparison.OrdinalIgnoreCase))
-                        {
-                            siblingLis.Add(sibling.OuterHtml);
-                        }
-                    }
-
-                    if (siblingLis.Any())
-                    {
-                        return string.Join(separator, siblingLis);
-                    }
-                }
-                else if (foundNodeType == "p")
-                {
-                    return firstFoundNode.OuterHtml; // החזר את ה-HTML של ה-<p> הראשון שנמצא
-                }
-            }
-        }
-
-        return null;
-    }
-
-    private static HtmlNode GetNextNode(HtmlNode node)
-    {
-        if (node == null) return null;
-
-        if (node.FirstChild != null)
-            return node.FirstChild;
-
-        HtmlNode current = node;
-        while (current != null)
-        {
-            if (current.NextSibling != null)
-                return current.NextSibling;
-
-            current = current.ParentNode;
-        }
-
-        return null;
+        doc.LoadHtml(input);
+        return HtmlEntity.DeEntitize(doc.DocumentNode.InnerText);
     }
 }
