@@ -23,7 +23,7 @@ public class CsvCopyAndSplit
             string line;
             while ((line = ReadLineLFOnly(reader)) != null)
             {
-                string[] columns = Regex.Split(line, @"\t");
+                string[] columns = Regex.Split(line, @"\\");
 
                 if (columns.Length > 0 && Regex.IsMatch(columns[0], @"\d")) // בדיקה אם עמודה A מכילה לפחות מספר אחד
                 {
